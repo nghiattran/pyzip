@@ -1,8 +1,6 @@
-import codecs, binascii, zipfile, zlib
-
 TEST_PASSWORD = 'maikhongquen'
 TEST_ENCRYPTION_HEADER = b'\xa9\xab\x9e\x84.j]-!\x0b\x95\x9c'
-TEST_FILE_DATA = b'\xa1\x9b\xc5H\xf0\x07\xaa\xade\xc0{P\xe7\x06PK\x07\x08\x1e\xc2\x0c&\x1a\x00\x00\x00'
+TEST_FILE_DATA = b'\xa1\x9b\xc5H\xf0\x07\xaa\xade\xc0{P\xe7\x06'
 # 6.1.4 The following are the basic steps required to decrypt a file:
 #
 # 1) Initialize the three 32-bit keys with the password.
@@ -38,8 +36,8 @@ def decrypt(password, encryption_header, data):
 
     def update_keys(char):
         keys[0] = crc32(char, keys[0])
-        keys[1] = (keys[1] + (keys[0] & 0xff)) & 4294967295
-        keys[1] = (keys[1] * 134775813 + 1) & 4294967295
+        keys[1] = (keys[1] + (keys[0] & 0xff)) & 0xffffffff
+        keys[1] = (keys[1] * 134775813 + 1) & 0xffffffff
         keys[2] = crc32((keys[1] >> 24) & 0xff,keys[2])
 
     def decrypting_encryption_header(buffer):
@@ -61,12 +59,12 @@ def decrypt(password, encryption_header, data):
             update_keys(temp)
             res += chr(temp)
         return res
-    # print(password, encryption_header, data)
+
     initialize_encryption_keys(password)
-    encryption_header = decrypting_encryption_header(encryption_header)
+    decrypting_encryption_header(encryption_header)
     return str.encode(decrypt_compressed_data(data))
 
 
-# data = decrypt(bytes('nothing', encoding='utf-8'), TEST_ENCRYPTION_HEADER, TEST_FILE_DATA)
+# data = decrypt(bytes('maikhongquen', encoding='utf-8'), TEST_ENCRYPTION_HEADER, TEST_FILE_DATA)
 # print(data)
 

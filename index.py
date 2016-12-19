@@ -1,5 +1,7 @@
 import codecs, binascii
 from encryption import decrypt
+import time
+import string
 
 LOCAL_FILE_HEADER_SIG = 0x04034b50
 DATA_DESCRIPTOR_SIG = 0x08074b50
@@ -68,7 +70,7 @@ class Zip:
         compression_method = int.from_bytes(f.read(2), byteorder='little')
         last_modification_time = f.read(2)
         last_modification_date = f.read(2)
-        crc32 = f.read(4)
+        crc32 = int.from_bytes(f.read(4), byteorder='little')
         compressed_size = int.from_bytes(f.read(4), byteorder='little')
         uncompressed_size = int.from_bytes(f.read(4), byteorder='little')
         filename_length = int.from_bytes(f.read(2), byteorder='little')
@@ -82,12 +84,13 @@ class Zip:
             encryption_header = self.parse_decryption_header(f)
 
         # Get file data
-        if flags[0] == 1:
+        original_file_data = f.read(uncompressed_size)
+        if flags[0] == 1 and self.password is not None:
             filedata = decrypt(self.password,
                                encryption_header,
-                               f.read(uncompressed_size))
+                               original_file_data)
         else:
-            filedata = f.read(uncompressed_size)
+            filedata = original_file_data
 
         data_descriptor = None
 
@@ -117,6 +120,7 @@ class Zip:
             'filename': filename,
             'extra': extra,
             'filedata': filedata,
+            'original_file_data': original_file_data,
             'data_descriptor': data_descriptor,
             'encryption_header': encryption_header
         }
@@ -130,7 +134,7 @@ class Zip:
         compression_method = int.from_bytes(f.read(2), byteorder='little')
         last_modification_time = f.read(2)
         last_modification_date = f.read(2)
-        crc32 = f.read(4)
+        crc32 = int.from_bytes(f.read(4), byteorder='little')
         compressed_size = int.from_bytes(f.read(4), byteorder='little')
         uncompressed_size = int.from_bytes(f.read(4), byteorder='little')
         filename_length = int.from_bytes(f.read(2), byteorder='little')
@@ -192,27 +196,6 @@ class Zip:
 
 
     def parse_decryption_header(self, f):
-        # iv_size = f.read(2)
-        # iv_data = f.read(int.from_bytes(iv_size, byteorder='little'))
-        # print(int.from_bytes(iv_size, byteorder='little'), iv_data)
-        # size = f.read(4)
-        # format = f.read(2)
-        # alg_id = f.read(2)
-        # bit_len = f.read(2)
-        # flags = f.read(2)
-        # erd_size = f.read(2)
-        # print(int.from_bytes(erd_size, byteorder='little'))
-        # erd_data = f.read(int.from_bytes(erd_size, byteorder='little'))
-        # reserve1 = f.read(4)
-        # if int.from_bytes(reserve1, byteorder='little') != 0:
-        #     reserve2 = {
-        #         'hash_alg': f.read(2),
-        #         'h_size': f.read(2),
-        #         're_list': f.read(2)
-        #     }
-        # v_size = f.read(2)
-        # v_data = f.read(int.from_bytes(v_size, byteorder='little') - 4)
-        # v_crc32 = f.read(4)
         return f.read(12)
 
 
@@ -240,7 +223,65 @@ class Zip:
                                     ((value >> 9) & 0b1111111) + 1980)
 
 
-    def __init__(self, password = None):
+    def parse_zip(self, path):
+        with open(path, 'rb') as f:
+            self.local_files = []
+            sig = f.read(4)
+            if int.from_bytes(sig, byteorder='little') != LOCAL_FILE_HEADER_SIG:
+                raise Exception('This is not a zip file.')
+
+            while int.from_bytes(sig, byteorder='little') == LOCAL_FILE_HEADER_SIG:
+                self.local_files.append(self.parse_local_header(f))
+                sig = f.read(4)
+                if len(self.local_files[len(self.local_files) - 1]['filedata']) != 0:
+                    return
+
+            self.central_dir = []
+            while int.from_bytes(sig, byteorder='little') == CENTRAL_DIRECTORY_SIG:
+                self.central_dir.append(self.parse_central_directory(f))
+                sig = f.read(4)
+
+            if int.from_bytes(sig, byteorder='little') == END_CENTRAL_DIRECTORY_SIG:
+                data = self.parse_end_central_directory(f)
+
+
+    def update_password(self, password):
+        if type(password) is str:
+            password = bytes(password, encoding='utf-8')
+        if type(password) is not bytes:
+            raise Exception('Password has to be a string or a bytes type object')
+        self.password = password
+
+        for file in self.local_files:
+            if file['flags'][0] == 1:
+                file['filedata'] = decrypt(self.password,
+                                           file['encryption_header'],
+                                           file['original_file_data'])
+
+    def print(self):
+        for file in self.local_files:
+            print(file['flags'])
+            print('filedata', file['filedata'])
+            # print(file['filedata'], len(file['filedata']), file['compressed_size'], file['uncompressed_size'])
+            print(file['crc32'])
+            # if file['flags'][3] == 1:
+            #     print(file['data_descriptor']['crc32'])
+            print(binascii.crc32(file['filedata']))
+            print(file['filename'])
+            print(file['data_descriptor'])
+            # print(file['encryption_header'])
+            print()
+
+    def check_password(self, password):
+        self.update_password(password)
+        for file in self.local_files:
+            if binascii.crc32(file['filedata']) != file['crc32']:
+                raise RuntimeError('Wrong password!')
+        return True
+
+    def __init__(self, path, password = None):
+        self.parse_zip(path)
+
         if password is not None:
             if type(password) is str:
                 password = bytes(password, encoding='utf-8')
@@ -249,42 +290,49 @@ class Zip:
                 raise Exception('Password has to be a string or a bytes type object')
 
             self.password = password
+            self.check_password(password)
 
-        with open('zips/file.zip', 'rb') as f:
-            local_files = []
-            sig = f.read(4)
-            if int.from_bytes(sig, byteorder='little') != LOCAL_FILE_HEADER_SIG:
-                raise Exception('This is not a zip file.')
-
-            while int.from_bytes(sig, byteorder='little') == LOCAL_FILE_HEADER_SIG:
-                local_files.append(self.parse_local_header(f))
-                sig = f.read(4)
-
-            central_dir = []
-            while int.from_bytes(sig, byteorder='little') == CENTRAL_DIRECTORY_SIG:
-                central_dir.append(self.parse_central_directory(f))
-                sig = f.read(4)
-
-            if int.from_bytes(sig, byteorder='little') == END_CENTRAL_DIRECTORY_SIG:
-                data = self.parse_end_central_directory(f)
-
-            for file in local_files:
-                print(file['flags'])
-                print(file['filedata'], len(file['filedata']), file['compressed_size'], file['uncompressed_size'])
-                print(file['crc32'])
-                if file['flags'][3] == 1:
-                    print(file['data_descriptor']['crc32'])
-                # print(file['filename'])
-                # print(file['data_descriptor'])
-                # print(file['encryption_header'])
-                print()
-
-            # for file in central_dir:
-            #     print(file['crc32'])
-            #     print(file['version'])
-            #     print(file['flags'])
-            #     print(file['filename'])
-            #     print()
+        # self.print()
 
 
-data = Zip(bytes('maikhongquen', encoding='utf-8'))
+import itertools
+def bruteforce(charset, maxlength):
+    return (''.join(candidate)
+        for candidate in itertools.chain.from_iterable(itertools.product(charset, repeat=i)
+        for i in range(1, maxlength + 1)))
+
+def test(zip, password):
+    try:
+        zip.check_password(password)
+    except:
+        return False
+
+    return True
+
+number = 9
+zip = Zip('zips/file.zip')
+start = time.time()
+count = 0
+for index in range(1, number + 1):
+    count += pow(26, index)
+
+length = 0
+tenpercent = count / 10
+
+tmp = 0
+for attempt in bruteforce(string.ascii_lowercase, number):
+    length += 1
+    ratio = (length / count) * 10
+    if int(ratio) != tmp:
+        tmp = int(ratio)
+        print('{0}%'.format(tmp * 10))
+
+    # match it against your password, or whatever
+    if test(zip, attempt):
+        print(attempt)
+        break
+stop = time.time()
+duration = stop - start
+print(count)
+print(duration)
+print('{0}/s'.format(count/duration))
